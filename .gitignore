@@ -1,0 +1,16 @@
+# --- ModelSim / QuestaSim artifacts ---
+work/
+transcript
+*.wlf
+*.mpf
+*.mti
+*.crv
+*.log
+*.vstf
+
+# --- System / Editor temporary files ---
+.DS_Store
+Thumbs.db
+*.swp
+.vscode/
+.idea/
