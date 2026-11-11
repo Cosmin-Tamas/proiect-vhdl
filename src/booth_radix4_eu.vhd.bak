@@ -1,0 +1,124 @@
+----------------------------------------------------------------------------------
+-- File: booth_radix4_eu.vhd
+-- Description: Execution Unit (Datapath) for 16-bit Radix-4 Booth Multiplier.
+--              Performs 2-bit recoding, ALU additions/subtractions (+M, -M, +2M, -2M),
+--              and 2-bit arithmetic right shifts (ASR 2).
+----------------------------------------------------------------------------------
+
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+
+entity booth_radix4_eu is
+    generic (
+        DATA_WIDTH : integer := 16
+    );
+    port (
+        clk          : in  std_logic;
+        reset        : in  std_logic;
+        multiplicand : in  std_logic_vector(DATA_WIDTH-1 downto 0); -- Operand M
+        multiplier   : in  std_logic_vector(DATA_WIDTH-1 downto 0); -- Operand Q
+        
+        -- Control signals from CU
+        init_regs    : in  std_logic;
+        add_sub_en   : in  std_logic;
+        shift_en     : in  std_logic;
+        
+        -- Status signals to CU
+        count_zero   : out std_logic;
+        
+        -- 32-bit final product output
+        product      : out std_logic_vector((2 * DATA_WIDTH)-1 downto 0)
+    );
+end entity booth_radix4_eu;
+
+architecture Behavioral of booth_radix4_eu is
+    -- Internal registers
+    -- Accumulator A needs 17 bits (DATA_WIDTH + 1) to prevent overflow during additions
+    signal reg_a    : signed(DATA_WIDTH downto 0); 
+    signal reg_q    : std_logic_vector(DATA_WIDTH-1 downto 0);
+    signal q_m1     : std_logic; -- Overlap bit Q_-1
+    
+    -- Multiplicand multiples: M and 2M
+    signal m_x1     : signed(DATA_WIDTH downto 0);
+    signal m_x2     : signed(DATA_WIDTH downto 0);
+    
+    -- ALU result
+    signal alu_out  : signed(DATA_WIDTH downto 0);
+    signal triplet  : std_logic_vector(2 downto 0);
+    
+    -- Iteration counter (8 steps for 16-bit operands)
+    signal counter  : integer range 0 to DATA_WIDTH / 2;
+begin
+
+    -- Sign-extend multiplicand M to 17 bits
+    m_x1 <= resize(signed(multiplicand), DATA_WIDTH + 1);
+    
+    -- 2 * M calculated via 1-bit left shift
+    m_x2 <= m_x1(DATA_WIDTH-1 downto 0) & '0';
+    
+    -- Booth Radix-4 triplet recoding: (Q_1, Q_0, Q_-1)
+    triplet <= reg_q(1) & reg_q(0) & q_m1;
+
+    -- Zero flag status output for CU
+    count_zero <= '1' when counter = 0 else '0';
+
+    -- Final 32-bit product concatenation: {Accumulator A (16 LSBs), Multiplier Q}
+    product <= std_logic_vector(reg_a(DATA_WIDTH-1 downto 0)) & reg_q;
+
+    -- Combinational ALU logic implementing Radix-4 Booth recoding table
+    alu_proc: process(triplet, reg_a, m_x1, m_x2)
+    begin
+        case triplet is
+            when "001" | "010" => -- Add +1M
+                alu_out <= reg_a + m_x1;
+            when "011"         => -- Add +2M
+                alu_out <= reg_a + m_x2;
+            when "100"         => -- Subtract -2M
+                alu_out <= reg_a - m_x2;
+            when "101" | "110" => -- Subtract -1M
+                alu_out <= reg_a - m_x1;
+            when others        => -- 000 or 111: No operation (+0)
+                alu_out <= reg_a;
+        end case;
+    end process;
+
+    -- Sequential process for updating registers and shifting
+    seq_proc: process(clk, reset)
+    begin
+        if reset = '1' then
+            reg_a   <= (others => '0');
+            reg_q   <= (others => '0');
+            q_m1    <= '0';
+            counter <= 0;
+        elsif rising_edge(clk) then
+            -- Initialization phase
+            if init_regs = '1' then
+                reg_a   <= (others => '0');
+                reg_q   <= multiplier;
+                q_m1    <= '0';
+                counter <= DATA_WIDTH / 2; -- Load 8 iterations
+                
+            -- Update accumulator with ALU calculation result
+            elsif add_sub_en = '1' then
+                reg_a <= alu_out;
+
+            -- 2-bit Arithmetic Shift Right across combined register {A, Q, Q_-1}
+            elsif shift_en = '1' then
+                q_m1  <= reg_q(1);
+                
+                -- Explicit type conversion to std_logic_vector for reg_a slice
+                reg_q <= std_logic_vector(reg_a(1 downto 0)) & reg_q(DATA_WIDTH-1 downto 2);
+                
+                -- Sign extension shift for accumulator A
+                reg_a <= signed(reg_a(DATA_WIDTH) & reg_a(DATA_WIDTH) & std_logic_vector(reg_a(DATA_WIDTH downto 2)));
+                
+                -- Decrement iteration counter
+                if counter > 0 then
+                    counter <= counter - 1;
+                end if;
+            end if;
+        end if;
+    end process;
+
+end architecture Behavioral;
